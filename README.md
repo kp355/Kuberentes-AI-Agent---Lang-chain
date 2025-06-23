@@ -1,4 +1,4 @@
-# Kubernetes Dashboard API
+# Kubernetes AI API
 
 A FastAPI-based service that provides natural language querying and filtering of Kubernetes resources. This service integrates with Kubernetes clusters and offers both a natural language interface and structured API endpoints.
 
@@ -21,8 +21,8 @@ A FastAPI-based service that provides natural language querying and filtering of
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/kubernetes-dashboard-api.git
-   cd kubernetes-dashboard-api
+   git clone https://github.com/kubescale-dev/k8s-mcp.git
+   cd k8s-mcp
    ```
 
 2. Create and activate a virtual environment:
