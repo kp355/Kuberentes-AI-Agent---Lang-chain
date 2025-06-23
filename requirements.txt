@@ -6,3 +6,7 @@ google-genai
 python-multipart
 python-dotenv
 mcp
+autogen
+autogen-ext
+autogen-agentchat 
+autogen-ext[openai,mcp]
