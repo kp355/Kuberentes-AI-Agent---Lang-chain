@@ -10,3 +10,4 @@ autogen
 autogen-ext
 autogen-agentchat 
 autogen-ext[openai,mcp]
+openai
