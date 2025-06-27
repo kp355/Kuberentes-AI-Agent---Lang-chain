@@ -13,4 +13,5 @@ def get_ai_suggestion(prompt):
             {"role": "user", "content": prompt}
         ]
     )
+    # print("git ai response", response.choices[0].message.content)
     return response.choices[0].message.content
