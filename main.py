@@ -46,7 +46,6 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix="/api/v1/agent", tags=["agent"])
     app.include_router(recommendation_router, prefix="/api/v1/recommendations", tags=["recommendations"])  
 
-    
 
     
     # Health check endpoint

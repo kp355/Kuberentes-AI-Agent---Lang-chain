@@ -1,13 +1,9 @@
 import json
 import logging
-import traceback
 import re
 from fastapi import APIRouter, HTTPException, Query
 from models.model import QueryRequest, QueryResponse
 from utils.utils import get_k8s_agent
-from utils.utils import download_kubeconfig
-from autogen_ext.tools.mcp import McpWorkbench
-from autogen_ext.tools.mcp import StdioServerParams
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -68,33 +64,6 @@ async def handle_query(
     cluster_id: str = Query(..., description="The ID of the Kubernetes cluster"),
 ):
     try:
-        prompt_text = request.prompt.strip().lower()
-        # if "analyze" in prompt_text:
-        #     kubeconfig = await download_kubeconfig(cluster_id)
-
-        #     # ✅ Step 2: Build k8sgpt analyze command
-        #     process = await asyncio.create_subprocess_exec(
-        #         "k8sgpt", "analyze",
-        #         "--kubeconfig", kubeconfig,
-        #         "--output", "json",  # return machine-readable format
-        #         stdout=asyncio.subprocess.PIPE,
-        #         stderr=asyncio.subprocess.PIPE
-        #     )
-
-        #     # ✅ Step 3: Wait and capture output
-        #     stdout, stderr = await process.communicate()
-
-        #     if process.returncode != 0:
-        #         raise Exception(f"[k8sgpt error] {stderr.decode().strip()}")
-
-        #     return QueryResponse(
-        #         response=stdout.decode().strip(),
-        #         cluster_id=cluster_id
-        #     )
-        
-
-       
-        # ✅ Default case: Use your get_k8s_agent
         agent = await get_k8s_agent(cluster_id)
         task_result = await agent.run(task=request.prompt)
 
@@ -114,8 +83,6 @@ async def handle_query(
     except Exception as e:
         logger.error(f"Error processing query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-   
-
 
 
 
@@ -124,7 +91,7 @@ from fastapi import APIRouter, HTTPException, Query
 from models.model import QueryRequest, QueryResponse
 from utils.utils import download_kubeconfig
 
-router = APIRouter()
+# router = APIRouter()
 
 @router.post("/analyze", response_model=QueryResponse)
 async def analyze_with_k8sgpt(
