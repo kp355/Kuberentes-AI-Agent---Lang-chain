@@ -69,28 +69,31 @@ async def handle_query(
 ):
     try:
         prompt_text = request.prompt.strip().lower()
+        # if "analyze" in prompt_text:
+        #     kubeconfig = await download_kubeconfig(cluster_id)
 
-        # ✅ If prompt says "analyze the problem", use K8sGPT
-        if "analyze" in prompt_text:
-            kubeconfig = await download_kubeconfig(cluster_id)
+        #     # ✅ Step 2: Build k8sgpt analyze command
+        #     process = await asyncio.create_subprocess_exec(
+        #         "k8sgpt", "analyze",
+        #         "--kubeconfig", kubeconfig,
+        #         "--output", "json",  # return machine-readable format
+        #         stdout=asyncio.subprocess.PIPE,
+        #         stderr=asyncio.subprocess.PIPE
+        #     )
 
-            async with McpWorkbench(
-                server_params=StdioServerParams(
-                    command="k8sgpt",
-                    args=["serve", "mcp", "--kubeconfig", kubeconfig]
-                )
-            ) as workbench:
-                agent = AssistantAgent(
-                    name="k8sgpt",
-                    llm_config={"config_list": [{"model": "gpt-4"}]},
-                    workbench=workbench,
-                    human_input_mode="NEVER"
-                )
-                result = await agent.run(prompt_text)
-                response = result.messages[-1].content
+        #     # ✅ Step 3: Wait and capture output
+        #     stdout, stderr = await process.communicate()
 
-                return QueryResponse(response=response, cluster_id=cluster_id)
+        #     if process.returncode != 0:
+        #         raise Exception(f"[k8sgpt error] {stderr.decode().strip()}")
 
+        #     return QueryResponse(
+        #         response=stdout.decode().strip(),
+        #         cluster_id=cluster_id
+        #     )
+        
+
+       
         # ✅ Default case: Use your get_k8s_agent
         agent = await get_k8s_agent(cluster_id)
         task_result = await agent.run(task=request.prompt)
