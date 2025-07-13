@@ -4,6 +4,7 @@ import boto3
 from fastapi import HTTPException
 from datetime import date, datetime, timedelta
 import logging
+import yaml
 # Configure logging
 
 
@@ -85,14 +86,69 @@ async def get_k8s_agent(cluster_id: str) -> AssistantAgent:
             detail=f"Failed to initialize K8s agent: {str(e)}. Please check the server logs for more details."
         )
 
+def validate_kubeconfig_yaml(file_path: str):
+    """Check that the kubeconfig is valid YAML."""
+    try:
+        with open(file_path, "r") as f:
+            yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Kubeconfig YAML is invalid: {e}"
+        )
+
+# async def download_kubeconfig(cluster_id: str) -> str:
+#     """
+#     Get kubeconfig file path, download from S3 if not already present.
+    
+#     Args:
+#         cluster_id: The ID of the Kubernetes cluster
+        
+#     Returns:
+#         str: Path to the kubeconfig file
+#     """
+#     try:
+#         kubeconfig_key = f"kubeconfigs/{cluster_id}"
+#         temp_dir = tempfile.gettempdir()
+#         kubeconfig_path = os.path.join(temp_dir, f"{cluster_id}")
+        
+#         # Return existing kubeconfig if it's already downloaded and valid
+#         if os.path.exists(kubeconfig_path):
+#             logger.info(f"Using existing kubeconfig at {kubeconfig_path}")
+#             return kubeconfig_path
+            
+#         logger.info(f"Downloading kubeconfig for cluster {cluster_id}...")
+        
+#         # Ensure the directory exists
+#         os.makedirs(os.path.dirname(kubeconfig_path), exist_ok=True)
+        
+#         # Download the kubeconfig
+#         s3_client = get_s3_client()
+#         s3_client.download_file(S3_BUCKET_NAME, kubeconfig_key, kubeconfig_path)
+        
+#         # Verify the file was downloaded
+#         if not os.path.exists(kubeconfig_path):
+#             raise FileNotFoundError(f"Kubeconfig file for cluster {cluster_id} not found in S3 after download.")
+            
+#         # Set appropriate permissions
+#         os.chmod(kubeconfig_path, 0o600)
+        
+#         logger.info(f"Successfully downloaded kubeconfig to {kubeconfig_path}")
+#         return kubeconfig_path
+#     except Exception as e:
+#         logger.error(f"Failed to download kubeconfig for cluster {cluster_id}: {str(e)}")
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Failed to download kubeconfig for cluster {cluster_id}: {str(e)}"
+#         )
 
 async def download_kubeconfig(cluster_id: str) -> str:
     """
-    Get kubeconfig file path, download from S3 if not already present.
-    
+    Download kubeconfig from S3 or use existing file if present and valid.
+
     Args:
         cluster_id: The ID of the Kubernetes cluster
-        
+
     Returns:
         str: Path to the kubeconfig file
     """
@@ -100,37 +156,39 @@ async def download_kubeconfig(cluster_id: str) -> str:
         kubeconfig_key = f"kubeconfigs/{cluster_id}"
         temp_dir = tempfile.gettempdir()
         kubeconfig_path = os.path.join(temp_dir, f"{cluster_id}")
-        
-        # Return existing kubeconfig if it's already downloaded and valid
+
+        # Check if file exists and is valid
         if os.path.exists(kubeconfig_path):
             logger.info(f"Using existing kubeconfig at {kubeconfig_path}")
-            return kubeconfig_path
-            
+            try:
+                validate_kubeconfig_yaml(kubeconfig_path)
+                return kubeconfig_path
+            except HTTPException as ve:
+                logger.warning(f"Existing kubeconfig invalid. Re-downloading: {ve.detail}")
+
         logger.info(f"Downloading kubeconfig for cluster {cluster_id}...")
-        
-        # Ensure the directory exists
+
+        # Ensure temp dir exists
         os.makedirs(os.path.dirname(kubeconfig_path), exist_ok=True)
-        
-        # Download the kubeconfig
+
+        # Download file
         s3_client = get_s3_client()
         s3_client.download_file(S3_BUCKET_NAME, kubeconfig_key, kubeconfig_path)
-        
-        # Verify the file was downloaded
-        if not os.path.exists(kubeconfig_path):
-            raise FileNotFoundError(f"Kubeconfig file for cluster {cluster_id} not found in S3 after download.")
-            
-        # Set appropriate permissions
+
+        # Validate downloaded file
+        validate_kubeconfig_yaml(kubeconfig_path)
+
+        # Set permissions
         os.chmod(kubeconfig_path, 0o600)
-        
         logger.info(f"Successfully downloaded kubeconfig to {kubeconfig_path}")
         return kubeconfig_path
+
     except Exception as e:
-        logger.error(f"Failed to download kubeconfig for cluster {cluster_id}: {str(e)}")
+        logger.error(f"❌ Failed to download kubeconfig for cluster {cluster_id}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to download kubeconfig for cluster {cluster_id}: {str(e)}"
         )
-
 
 # Configure S3 client for kubeconfig retrieval
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")

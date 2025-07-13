@@ -13,7 +13,7 @@ if str(project_root) not in sys.path:
 # Import routers
 from handlers.filter_handler import router as filter_router
 
-#from handlers.agent_handler import router as agent_router
+from handlers.agent_handler import router as agent_router
 
 from handlers.recommendation_handler import router as recommendation_router
 
@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(filter_router, prefix="/api/v1/filter", tags=["filter"])
 
-    #app.include_router(agent_router, prefix="/api/v1/agent", tags=["agent"])
+    app.include_router(agent_router, prefix="/api/v1/agent", tags=["agent"])
     app.include_router(recommendation_router, prefix="/api/v1/recommendations", tags=["recommendations"])  
 
 
