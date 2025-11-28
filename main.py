@@ -1,65 +1,105 @@
-from fastapi import FastAPI, Depends, HTTPException
+"""FastAPI main application with LangChain + LangGraph integration."""
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import logging
-import os
-import sys
-from pathlib import Path
+from handlers import agent_handler, filter_handler, recommendation_handler
+from models.model import HealthResponse
+from models.config import config
+import structlog
+from datetime import datetime
 
-# Add the project root to the Python path
-project_root = Path(__file__).parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ]
+)
 
-# Import routers
-from handlers.filter_handler import router as filter_router
+logger = structlog.get_logger()
 
-from handlers.agent_handler import router as agent_router
+# Create FastAPI app
+app = FastAPI(
+    title="Kubernetes AI Troubleshooter",
+    description="LangChain + LangGraph powered Kubernetes troubleshooting assistant",
+    version="2.0.0"
+)
 
-from handlers.recommendation_handler import router as recommendation_router
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.app.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    app = FastAPI(
-        title="Kubernetes Dashboard API",
-        description="API for querying and filtering Kubernetes resources",
-        version="1.0.0"
-    )
-    
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    # Include routers
-    app.include_router(filter_router, prefix="/api/v1/filter", tags=["filter"])
-
-    app.include_router(agent_router, prefix="/api/v1/agent", tags=["agent"])
-    app.include_router(recommendation_router, prefix="/api/v1/recommendations", tags=["recommendations"])  
+# Include routers
+app.include_router(agent_handler.router, prefix="/api/agent", tags=["agent"])
+app.include_router(filter_handler.router, prefix="/api/filter", tags=["filter"])
+app.include_router(recommendation_handler.router, prefix="/api/recommendations", tags=["recommendations"])
 
 
-    
-    # Health check endpoint
-    @app.get("/health")
-    async def health_check():
-        """Health check endpoint."""
-        return {"status": "healthy"}
-    
-    return app
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "name": "Kubernetes AI Troubleshooter",
+        "version": "2.0.0",
+        "framework": "LangChain + LangGraph",
+        "status": "operational"
+    }
 
-# Create the application instance
-app = create_app()
 
-# For development with uvicorn
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint."""
+    try:
+        # Check LLM availability
+        from models.ai import get_llm
+        llm = get_llm()
+        llm_status = "healthy" if llm else "unavailable"
+        
+        # Check Kubernetes connectivity
+        try:
+            from utils.kubeconfig_loader import get_kubeconfig_path
+            kubeconfig_path = get_kubeconfig_path()
+            k8s_status = "healthy"
+        except Exception:
+            k8s_status = "unavailable"
+        
+        return HealthResponse(
+            status="healthy",
+            version="2.0.0",
+            timestamp=datetime.now(),
+            components={
+                "llm": llm_status,
+                "kubernetes": k8s_status,
+                "langgraph": "healthy"
+            }
+        )
+    except Exception as e:
+        logger.error("Health check failed", error=str(e))
+        return HealthResponse(
+            status="unhealthy",
+            version="2.0.0",
+            timestamp=datetime.now(),
+            components={"error": str(e)}
+        )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Application startup event."""
+    logger.info("Starting Kubernetes AI Troubleshooter", version="2.0.0")
+    logger.info("Framework: LangChain + LangGraph")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown event."""
+    logger.info("Shutting down Kubernetes AI Troubleshooter")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

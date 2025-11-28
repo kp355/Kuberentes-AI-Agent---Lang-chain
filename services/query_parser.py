@@ -1,58 +1,113 @@
+"""Natural language query parser using LangChain."""
+from langchain_core.output_parsers import JsonOutputParser
+from models.ai import get_llm
+from models.prompt import get_filter_parsing_prompt
+from models.model import DashboardFilter, FilterResponse
+import structlog
 import json
-import logging
-from typing import Dict, Any
-from openai import OpenAI
-import os
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
-# Initialize OpenAI client
-client = OpenAI(
-    api_key=os.getenv("GEMINI_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta"
-)
 
-def parse_natural_language_query(query: str) -> Dict[str, Any]:
-    """
-    Parse a natural language query into structured data using OpenAI.
+class QueryParserService:
+    """Service for parsing natural language queries into structured filters."""
     
-    Args:
-        query: Natural language query string
+    def __init__(self):
+        self.llm = get_llm()
+        self.prompt = get_filter_parsing_prompt()
+        self.parser = JsonOutputParser()
+    
+    async def parse_filter_query(self, query: str) -> FilterResponse:
+        """Parse a natural language query into structured filters."""
+        logger.info("Parsing filter query", query=query)
         
-    Returns:
-        Dict containing parsed parameters (resource_type, from_date, to_date)
-    """
-    system_prompt = """You are a helpful assistant that extracts filter parameters from natural language queries.
-    Extract the following information as JSON:
-    - resource_type: One of [node, namespace, pod, container, statefulset, deployment, controller] or null
-    - from_date: The start date in YYYY-MM-DD format or relative format like 'yesterday', '3 days ago'
-    - to_date: The end date in YYYY-MM-DD format or relative format like 'today', '1 week from now'"""
+        try:
+            # Create parsing prompt
+            messages = self.prompt.format_messages(query=query)
+            
+            # Add JSON output instruction
+            messages.append({
+                "role": "system",
+                "content": "Return only valid JSON array of filter objects. No additional text."
+            })
+            
+            # Get LLM response
+            response = await self.llm.ainvoke(messages)
+            response_text = response.content
+            
+            # Parse JSON response
+            try:
+                # Try to extract JSON from response
+                json_start = response_text.find('[')
+                json_end = response_text.rfind(']') + 1
+                
+                if json_start >= 0 and json_end > json_start:
+                    json_text = response_text[json_start:json_end]
+                    filters_data = json.loads(json_text)
+                else:
+                    filters_data = json.loads(response_text)
+                
+                # Convert to DashboardFilter objects
+                filters = [
+                    DashboardFilter(
+                        field=f.get('field'),
+                        operator=f.get('operator'),
+                        value=f.get('value')
+                    )
+                    for f in filters_data
+                ]
+                
+                result = FilterResponse(
+                    filters=filters,
+                    raw_query=query,
+                    confidence=0.95 if filters else 0.5
+                )
+                
+                logger.info("Query parsed successfully", filter_count=len(filters))
+                return result
+                
+            except json.JSONDecodeError as e:
+                logger.warning("Failed to parse JSON response", error=str(e))
+                
+                # Fallback: create simple filter based on keywords
+                return self._create_fallback_filter(query)
+                
+        except Exception as e:
+            logger.error("Query parsing failed", error=str(e))
+            return self._create_fallback_filter(query)
     
-    try:
-        response = client.chat.completions.create(
-            model="gemini-2.0-flash",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query}
-            ],
-            response_format={"type": "json_object"}
+    def _create_fallback_filter(self, query: str) -> FilterResponse:
+        """Create a simple fallback filter when parsing fails."""
+        query_lower = query.lower()
+        filters = []
+        
+        # Simple keyword matching
+        if "running" in query_lower:
+            filters.append(DashboardFilter(
+                field="status",
+                operator="equals",
+                value="Running"
+            ))
+        elif "pending" in query_lower:
+            filters.append(DashboardFilter(
+                field="status",
+                operator="equals",
+                value="Pending"
+            ))
+        elif "failed" in query_lower or "error" in query_lower:
+            filters.append(DashboardFilter(
+                field="status",
+                operator="equals",
+                value="Failed"
+            ))
+        
+        return FilterResponse(
+            filters=filters,
+            raw_query=query,
+            confidence=0.3  # Low confidence for fallback
         )
-        
-        result = json.loads(response.choices[0].message.content)
-        logger.info(f"Parsed query result: {result}")
-        
-        # Ensure we have all required fields with defaults
-        return {
-            "resource_type": result.get("resource_type"),
-            "from_date": result.get("from_date", "today"),
-            "to_date": result.get("to_date", "today")
-        }
-        
-    except Exception as e:
-        logger.error(f"Error parsing query with OpenAI: {e}")
-        # Return default values on error
-        return {
-            "resource_type": None,
-            "from_date": "today",
-            "to_date": "today"
-        }
+
+
+def get_query_parser() -> QueryParserService:
+    """Get query parser service instance."""
+    return QueryParserService()

@@ -1,25 +1,28 @@
-from fastapi import APIRouter, HTTPException, Body
-from fastapi.responses import JSONResponse
-from models.prompt import build_ai_prompt
-from models.ai import get_ai_suggestion
-from typing import Dict, Any
+"""Handler for AI recommendations and resource optimization."""
+from fastapi import APIRouter, HTTPException
+from models.model import RecommendationResponse
+from services.resource_optimizer import get_resource_optimizer
+from utils.kubeconfig_loader import get_kubeconfig_path
+import structlog
 
+logger = structlog.get_logger()
 router = APIRouter()
 
 
-@router.post("/")
-def get_recommendations(
-    req: Dict[str, Any] = Body(...)
-):
+@router.get("/recommendations/{namespace}", response_model=RecommendationResponse)
+async def get_recommendations(namespace: str = "default"):
+    """Get AI-powered resource optimization recommendations."""
+    logger.info("Getting recommendations", namespace=namespace)
+    
     try:
-        # print("allocation", req)
-        prompt = build_ai_prompt(req)  # allocation is a plain dict now
-        suggestion = get_ai_suggestion(prompt)
-        print("suggestion", suggestion)
-        return {
-            "metrics": req,
-            "suggestion": suggestion,
-        }
-
+        kubeconfig_path = get_kubeconfig_path()
+        optimizer = get_resource_optimizer(kubeconfig_path)
+        
+        result = await optimizer.get_recommendations(namespace)
+        
+        logger.info("Recommendations generated", count=len(result.recommendations))
+        return result
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Recommendation generation failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to generate recommendations: {str(e)}")

@@ -1,38 +1,25 @@
+"""Handler for natural language filter queries."""
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
-import logging
+from models.model import FilterResponse
+from services.query_parser import get_query_parser
+import structlog
 
-# Use relative import since we're in the same package
-from models.model import DashboardFilter, FilterRequest, FilterResponse
-
+logger = structlog.get_logger()
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
-@router.post("/query", response_model=FilterResponse)
-async def handle_filter(request: FilterRequest) -> FilterResponse:
-    """
-    Handle filter requests with natural language queries.
+
+@router.post("/parse-filter", response_model=FilterResponse)
+async def parse_filter_query(query: str):
+    """Parse natural language query into structured filters."""
+    logger.info("Parsing filter query", query=query)
     
-    Args:
-        request: FilterRequest containing the natural language query
-        
-    Returns:
-        FilterResponse with parsed filter parameters
-    """
     try:
-        # Parse the query into a DashboardFilter
-        dashboard_filter = DashboardFilter.from_query(request.query)
+        parser = get_query_parser()
+        result = await parser.parse_filter_query(query)
         
-        # Convert to FilterResponse
-        return FilterResponse(
-            resource_type=dashboard_filter.selected_resource,
-            from_date=dashboard_filter.date_range.start,
-            to_date=dashboard_filter.date_range.to
-        )
+        logger.info("Filter parsed successfully", filter_count=len(result.filters))
+        return result
         
     except Exception as e:
-        logger.error(f"Error processing filter request: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to process filter request: {str(e)}"
-        )
+        logger.error("Filter parsing failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Filter parsing failed: {str(e)}")
