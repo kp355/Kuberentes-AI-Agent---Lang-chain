@@ -7,7 +7,7 @@ from enum import Enum
 
 class QueryRequest(BaseModel):
     """User query request."""
-    query: str = Field(..., description="Natural language query about Kubernetes")
+    prompt: str = Field(..., description="Natural language query about Kubernetes")
     cluster_id: Optional[str] = Field(None, description="Kubernetes cluster identifier")
     namespace: Optional[str] = Field("default", description="Kubernetes namespace")
     context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional context")

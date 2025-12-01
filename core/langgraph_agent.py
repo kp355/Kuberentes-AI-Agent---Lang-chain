@@ -1,11 +1,8 @@
-"""LangGraph-based Kubernetes troubleshooting agent."""
-from typing import TypedDict, Annotated, List, Dict, Any
+"""LangGraph-based Kubernetes troubleshooting agent - Gemini compatible (no bind_tools)."""
+from typing import Literal, Dict, Any, List, TypedDict, Annotated
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolExecutor
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, FunctionMessage
-from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from models.ai import get_llm
-from models.prompt import get_troubleshooting_prompt
 from core.k8s_tools import get_k8s_tools
 import structlog
 import operator
@@ -13,224 +10,470 @@ import operator
 logger = structlog.get_logger()
 
 
+# ---------------------------------------------------------
+# Convert LangChain StructuredTool → OpenAI JSON Schema tool
+# ---------------------------------------------------------
+def convert_tools_to_openai_format(tools):
+    formatted = []
+    for t in tools:
+        schema = (
+            t.args_schema.schema()
+            if getattr(t, "args_schema", None)
+            else {"type": "object", "properties": {}, "required": []}
+        )
+
+        formatted.append({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description or "",
+                "parameters": schema
+            }
+        })
+
+    return formatted
+
+
 class AgentState(TypedDict):
-    """State for the LangGraph agent."""
-    messages: Annotated[List[BaseMessage], operator.add]
-    query: str
+    messages: Annotated[List, operator.add]
     namespace: str
-    context: Dict[str, Any]
-    analysis: Dict[str, Any]
-    suggestions: List[str]
-    next: str
+
+
+KUBERNETES_EXPERT_PROMPT = """You are an expert Kubernetes troubleshooting assistant.
+
+Namespace: {namespace}
+
+Available Tools:
+- list_pods
+- get_pod_logs
+- get_pod_events
+- describe_pod
+- list_deployments
+- get_nodes
+- list_namespaces
+
+You MUST use tools when needed.
+Always provide structured markdown output with Summary, Details, Issues, Recommendations.
+"""
 
 
 class KubernetesTroubleshootingAgent:
-    """LangGraph agent for Kubernetes troubleshooting."""
-    
+    """LangGraph agent designed for Gemini (OpenAI-compatible API)."""
+
     def __init__(self, kubeconfig_path: str = None):
-        """Initialize the agent with LangGraph workflow."""
         self.llm = get_llm()
+
+        # LangChain StructuredTools
         self.tools = get_k8s_tools(kubeconfig_path)
-        self.tool_executor = ToolExecutor(self.tools)
-        
-        # Bind tools to LLM
-        self.llm_with_tools = self.llm.bind_tools(self.tools)
-        
-        # Build the graph
+        self.tools_by_name = {tool.name: tool for tool in self.tools}
+
+        # Convert to OpenAI JSON schema
+        self.openai_tools = convert_tools_to_openai_format(self.tools)
+
+        self.namespace = "default"
         self.graph = self._build_graph()
-        logger.info("LangGraph agent initialized")
-    
-    def _build_graph(self) -> StateGraph:
-        """Build the LangGraph state machine."""
+
+        logger.info("LangGraph agent initialized", tools_count=len(self.tools))
+
+    # -----------------------------------------------------
+    # Build Graph
+    # -----------------------------------------------------
+    def _build_graph(self):
         workflow = StateGraph(AgentState)
-        
-        # Add nodes
-        workflow.add_node("analyze_query", self._analyze_query)
-        workflow.add_node("select_tools", self._select_tools)
-        workflow.add_node("execute_tools", self._execute_tools)
-        workflow.add_node("synthesize_response", self._synthesize_response)
-        
-        # Add edges
-        workflow.set_entry_point("analyze_query")
-        workflow.add_edge("analyze_query", "select_tools")
+
+        workflow.add_node("agent", self._call_agent)
+        workflow.add_node("tools", self._execute_tools)
+
+        workflow.set_entry_point("agent")
+
         workflow.add_conditional_edges(
-            "select_tools",
+            "agent",
             self._should_continue,
-            {
-                "continue": "execute_tools",
-                "end": "synthesize_response"
-            }
+            {"continue": "tools", "end": END}
         )
-        workflow.add_edge("execute_tools", "select_tools")
-        workflow.add_edge("synthesize_response", END)
-        
+
+        workflow.add_edge("tools", "agent")
+
         return workflow.compile()
-    
-    def _analyze_query(self, state: AgentState) -> AgentState:
-        """Analyze the user query and determine intent."""
-        logger.info("Analyzing query", query=state["query"])
-        
-        # Add context about available tools
-        tool_descriptions = "\n".join([
-            f"- {tool.name}: {tool.description}"
-            for tool in self.tools
-        ])
-        
-        context_message = f"""Available Kubernetes tools:
-{tool_descriptions}
 
-Analyze the query and determine which tools to use."""
-        
-        state["context"]["tool_descriptions"] = tool_descriptions
-        state["messages"].append(HumanMessage(content=context_message))
-        
-        return state
-    
-    def _select_tools(self, state: AgentState) -> AgentState:
-        """Select which tools to use based on the query."""
-        logger.info("Selecting tools")
-        
+    # -----------------------------------------------------
+    # Call LLM with tools
+    # -----------------------------------------------------
+    def _call_agent(self, state: AgentState):
+        logger.info("Calling agent")
+
+        namespace = state["namespace"]
         messages = state["messages"]
-        
-        # Get LLM response with tool calls
-        response = self.llm_with_tools.invoke(messages)
-        state["messages"].append(response)
-        
-        return state
-    
-    def _should_continue(self, state: AgentState) -> str:
-        """Determine if we should continue with tool execution or synthesize response."""
-        last_message = state["messages"][-1]
-        
-        # If the LLM makes a tool call, continue
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+
+        # Ensure system prompt
+        if not any(isinstance(m, SystemMessage) for m in messages):
+            sys_msg = SystemMessage(content=KUBERNETES_EXPERT_PROMPT.format(namespace=namespace))
+            messages = [sys_msg] + list(messages)
+
+        # Call Gemini using OpenAI-compatible tools
+        response = self.llm.invoke(
+            messages,
+            tools=self.openai_tools,   # <-- Correct format
+            tool_choice="auto"
+        )
+
+        return {"messages": [response]}
+
+    # -----------------------------------------------------
+    # Should the graph continue to tools?
+    # -----------------------------------------------------
+    def _should_continue(self, state: AgentState) -> Literal["continue", "end"]:
+        last_msg = state["messages"][-1]
+
+        # Gemini tool calls come through last_msg.tool_calls
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
             return "continue"
-        
-        # Otherwise, we're done with tool execution
+
         return "end"
-    
-    def _execute_tools(self, state: AgentState) -> AgentState:
-        """Execute the selected tools."""
+
+    # -----------------------------------------------------
+    # Execute tool calls
+    # -----------------------------------------------------
+    def _execute_tools(self, state: AgentState):
         logger.info("Executing tools")
-        
-        last_message = state["messages"][-1]
-        
-        # Execute all tool calls
-        for tool_call in last_message.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            
+
+        last_msg = state["messages"][-1]
+        tool_outputs = []
+
+        for call in last_msg.tool_calls:
+            tool_name = call["name"]
+            tool_args = call["args"]
+            call_id = call["id"]
+
             logger.info("Executing tool", tool=tool_name, args=tool_args)
-            
-            # Execute the tool
-            action = AgentAction(
-                tool=tool_name,
-                tool_input=tool_args,
-                log=f"Calling {tool_name} with {tool_args}"
-            )
-            
+
             try:
-                result = self.tool_executor.invoke(action)
-                
-                # Add tool result to messages
-                state["messages"].append(
-                    FunctionMessage(
+                tool = self.tools_by_name.get(tool_name)
+
+                if not tool:
+                    result = f"Tool '{tool_name}' not found."
+                else:
+                    result = tool.invoke(tool_args)
+
+                tool_outputs.append(
+                    ToolMessage(
                         content=str(result),
-                        name=tool_name
+                        name=tool_name,
+                        tool_call_id=call_id
                     )
                 )
-                
-                logger.info("Tool executed successfully", tool=tool_name)
-                
+
             except Exception as e:
-                logger.error("Tool execution failed", tool=tool_name, error=str(e))
-                state["messages"].append(
-                    FunctionMessage(
+                logger.error("Tool execution failed", error=str(e))
+                tool_outputs.append(
+                    ToolMessage(
                         content=f"Error executing {tool_name}: {str(e)}",
-                        name=tool_name
+                        name=tool_name,
+                        tool_call_id=call_id
                     )
                 )
-        
-        return state
-    
-    def _synthesize_response(self, state: AgentState) -> AgentState:
-        """Synthesize final response from gathered information."""
-        logger.info("Synthesizing response")
-        
-        # Create final prompt with all gathered context
-        final_prompt = f"""Based on the Kubernetes information gathered, provide a comprehensive response to:
 
-Query: {state['query']}
-Namespace: {state['namespace']}
+        return {"messages": tool_outputs}
 
-Provide:
-1. Root cause analysis (if applicable)
-2. Clear explanation of findings
-3. Actionable remediation steps
-4. Prevention recommendations
-
-Be specific, concise, and helpful."""
-        
-        state["messages"].append(HumanMessage(content=final_prompt))
-        
-        # Get final response
-        final_response = self.llm.invoke(state["messages"])
-        state["messages"].append(final_response)
-        
-        # Extract suggestions from the response
-        state["analysis"] = {
-            "status": "completed",
-            "tools_used": len([m for m in state["messages"] if isinstance(m, FunctionMessage)])
-        }
-        
-        return state
-    
-    async def query(self, query: str, namespace: str = "default", context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Execute a troubleshooting query."""
+    # -----------------------------------------------------
+    # Public query method
+    # -----------------------------------------------------
+    async def query(self, query: str, namespace: str = "default", context=None):
         logger.info("Processing query", query=query, namespace=namespace)
-        
-        # Initialize state
-        initial_state: AgentState = {
+
+        self.namespace = namespace
+
+        state: AgentState = {
             "messages": [HumanMessage(content=query)],
-            "query": query,
-            "namespace": namespace,
-            "context": context or {},
-            "analysis": {},
-            "suggestions": [],
-            "next": ""
+            "namespace": namespace
         }
-        
+
         try:
-            # Run the graph
-            result = await self.graph.ainvoke(initial_state)
-            
-            # Extract final response
-            final_message = result["messages"][-1]
-            response_text = final_message.content if hasattr(final_message, 'content') else str(final_message)
-            
+            result = await self.graph.ainvoke(state)
+
+            final = result["messages"][-1]
+            text = final.content if hasattr(final, "content") else str(final)
+
+            tools_used = len([m for m in result["messages"] if isinstance(m, ToolMessage)])
+
             return {
-                "response": response_text,
-                "analysis": result["analysis"],
-                "suggestions": result["suggestions"],
+                "response": text,
+                "analysis": {
+                    "status": "completed",
+                    "namespace": namespace,
+                    "tools_used": tools_used
+                },
+                "suggestions": self._extract_suggestions(text),
                 "success": True
             }
-            
+
         except Exception as e:
             logger.error("Agent execution failed", error=str(e))
             return {
-                "response": f"Error processing query: {str(e)}",
+                "response": f"Failure: {str(e)}",
                 "analysis": {"status": "failed", "error": str(e)},
-                "suggestions": [],
+                "suggestions": ["Try specifying a namespace", "Check cluster connectivity"],
                 "success": False
             }
 
+    # -----------------------------------------------------
+    # Suggestion extraction
+    # -----------------------------------------------------
+    def _extract_suggestions(self, text: str):
+        result = []
+        for line in text.split("\n"):
+            if line.startswith("- ") and any(
+                kw in line.lower() for kw in ["recommend", "should", "check", "try", "consider"]
+            ):
+                result.append(line[2:].strip())
+        return result[:5]
 
-# Global agent instance
+
+# Global singleton
 _agent_instance = None
 
 
-def get_agent(kubeconfig_path: str = None) -> KubernetesTroubleshootingAgent:
-    """Get or create the global agent instance."""
+def get_agent(kubeconfig_path=None):
+    global _agent_instance
+    if _agent_instance is None:
+        _agent_instance = KubernetesTroubleshootingAgent(kubeconfig_path)
+    return _agent_instance
+"""LangGraph-based Kubernetes troubleshooting agent - Gemini compatible (no bind_tools)."""
+from typing import Literal, Dict, Any, List, TypedDict, Annotated
+from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from models.ai import get_llm
+from core.k8s_tools import get_k8s_tools
+import structlog
+import operator
+
+logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------
+# Convert LangChain StructuredTool → OpenAI JSON Schema tool
+# ---------------------------------------------------------
+def convert_tools_to_openai_format(tools):
+    formatted = []
+    for t in tools:
+        schema = (
+            t.args_schema.schema()
+            if getattr(t, "args_schema", None)
+            else {"type": "object", "properties": {}, "required": []}
+        )
+
+        formatted.append({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description or "",
+                "parameters": schema
+            }
+        })
+
+    return formatted
+
+
+class AgentState(TypedDict):
+    messages: Annotated[List, operator.add]
+    namespace: str
+
+
+KUBERNETES_EXPERT_PROMPT = """You are an expert Kubernetes troubleshooting assistant.
+
+Namespace: {namespace}
+
+Available Tools:
+- list_pods
+- get_pod_logs
+- get_pod_events
+- describe_pod
+- list_deployments
+- get_nodes
+- list_namespaces
+
+You MUST use tools when needed.
+Always provide structured markdown output with Summary, Details, Issues, Recommendations.
+"""
+
+
+class KubernetesTroubleshootingAgent:
+    """LangGraph agent designed for Gemini (OpenAI-compatible API)."""
+
+    def __init__(self, kubeconfig_path: str = None):
+        self.llm = get_llm()
+
+        # LangChain StructuredTools
+        self.tools = get_k8s_tools(kubeconfig_path)
+        self.tools_by_name = {tool.name: tool for tool in self.tools}
+
+        # Convert to OpenAI JSON schema
+        self.openai_tools = convert_tools_to_openai_format(self.tools)
+
+        self.namespace = "default"
+        self.graph = self._build_graph()
+
+        logger.info("LangGraph agent initialized", tools_count=len(self.tools))
+
+    # -----------------------------------------------------
+    # Build Graph
+    # -----------------------------------------------------
+    def _build_graph(self):
+        workflow = StateGraph(AgentState)
+
+        workflow.add_node("agent", self._call_agent)
+        workflow.add_node("tools", self._execute_tools)
+
+        workflow.set_entry_point("agent")
+
+        workflow.add_conditional_edges(
+            "agent",
+            self._should_continue,
+            {"continue": "tools", "end": END}
+        )
+
+        workflow.add_edge("tools", "agent")
+
+        return workflow.compile()
+
+    # -----------------------------------------------------
+    # Call LLM with tools
+    # -----------------------------------------------------
+    def _call_agent(self, state: AgentState):
+        logger.info("Calling agent")
+
+        namespace = state["namespace"]
+        messages = state["messages"]
+
+        # Ensure system prompt
+        if not any(isinstance(m, SystemMessage) for m in messages):
+            sys_msg = SystemMessage(content=KUBERNETES_EXPERT_PROMPT.format(namespace=namespace))
+            messages = [sys_msg] + list(messages)
+
+        # Call Gemini using OpenAI-compatible tools
+        response = self.llm.invoke(
+            messages,
+            tools=self.openai_tools,   # <-- Correct format
+            tool_choice="auto"
+        )
+
+        return {"messages": [response]}
+
+    # -----------------------------------------------------
+    # Should the graph continue to tools?
+    # -----------------------------------------------------
+    def _should_continue(self, state: AgentState) -> Literal["continue", "end"]:
+        last_msg = state["messages"][-1]
+
+        # Gemini tool calls come through last_msg.tool_calls
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            return "continue"
+
+        return "end"
+
+    # -----------------------------------------------------
+    # Execute tool calls
+    # -----------------------------------------------------
+    def _execute_tools(self, state: AgentState):
+        logger.info("Executing tools")
+
+        last_msg = state["messages"][-1]
+        tool_outputs = []
+
+        for call in last_msg.tool_calls:
+            tool_name = call["name"]
+            tool_args = call["args"]
+            call_id = call["id"]
+
+            logger.info("Executing tool", tool=tool_name, args=tool_args)
+
+            try:
+                tool = self.tools_by_name.get(tool_name)
+
+                if not tool:
+                    result = f"Tool '{tool_name}' not found."
+                else:
+                    result = tool.invoke(tool_args)
+
+                tool_outputs.append(
+                    ToolMessage(
+                        content=str(result),
+                        name=tool_name,
+                        tool_call_id=call_id
+                    )
+                )
+
+            except Exception as e:
+                logger.error("Tool execution failed", error=str(e))
+                tool_outputs.append(
+                    ToolMessage(
+                        content=f"Error executing {tool_name}: {str(e)}",
+                        name=tool_name,
+                        tool_call_id=call_id
+                    )
+                )
+
+        return {"messages": tool_outputs}
+
+    # -----------------------------------------------------
+    # Public query method
+    # -----------------------------------------------------
+    async def query(self, query: str, namespace: str = "default", context=None):
+        logger.info("Processing query", query=query, namespace=namespace)
+
+        self.namespace = namespace
+
+        state: AgentState = {
+            "messages": [HumanMessage(content=query)],
+            "namespace": namespace
+        }
+
+        try:
+            result = await self.graph.ainvoke(state)
+
+            final = result["messages"][-1]
+            text = final.content if hasattr(final, "content") else str(final)
+
+            tools_used = len([m for m in result["messages"] if isinstance(m, ToolMessage)])
+
+            return {
+                "response": text,
+                "analysis": {
+                    "status": "completed",
+                    "namespace": namespace,
+                    "tools_used": tools_used
+                },
+                "suggestions": self._extract_suggestions(text),
+                "success": True
+            }
+
+        except Exception as e:
+            logger.error("Agent execution failed", error=str(e))
+            return {
+                "response": f"Failure: {str(e)}",
+                "analysis": {"status": "failed", "error": str(e)},
+                "suggestions": ["Try specifying a namespace", "Check cluster connectivity"],
+                "success": False
+            }
+
+    # -----------------------------------------------------
+    # Suggestion extraction
+    # -----------------------------------------------------
+    def _extract_suggestions(self, text: str):
+        result = []
+        for line in text.split("\n"):
+            if line.startswith("- ") and any(
+                kw in line.lower() for kw in ["recommend", "should", "check", "try", "consider"]
+            ):
+                result.append(line[2:].strip())
+        return result[:5]
+
+
+# Global singleton
+_agent_instance = None
+
+
+def get_agent(kubeconfig_path=None):
     global _agent_instance
     if _agent_instance is None:
         _agent_instance = KubernetesTroubleshootingAgent(kubeconfig_path)

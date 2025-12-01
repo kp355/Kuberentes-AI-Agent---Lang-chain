@@ -1,8 +1,8 @@
-"""AI Client Factory with LLM provider support and fallback strategy."""
-from typing import Optional, List
-from langchain_google_genai import ChatGoogleGenerativeAI
+"""AI Client Factory with correct Gemini OpenAI-compatible support."""
+
+from typing import Optional, List, Any, Dict
 from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropicMessages
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from models.config import config
 import structlog
@@ -29,10 +29,10 @@ class AIClientFactory:
                 if client:
                     if self.primary_client is None:
                         self.primary_client = client
-                        logger.info(f"Primary LLM client initialized", provider=provider)
+                        logger.info("Primary LLM client initialized", provider=provider)
                     else:
                         self.fallback_clients.append(client)
-                        logger.info(f"Fallback LLM client initialized", provider=provider)
+                        logger.info("Fallback LLM client initialized", provider=provider)
             except Exception as e:
                 logger.warning(f"Failed to initialize {provider} client", error=str(e))
     
@@ -44,12 +44,15 @@ class AIClientFactory:
                     logger.warning("Gemini API key not found")
                     return None
                 
-                return ChatGoogleGenerativeAI(
+                logger.info("Creating Gemini client via OpenAI-compatible endpoint")
+
+                # IMPORTANT: ChatOpenAI works correctly with Gemini's OpenAI-compatible API
+                return ChatOpenAI(
                     model=self.config.gemini_model,
-                    google_api_key=self.config.gemini_api_key,
+                    api_key=self.config.gemini_api_key,
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                     temperature=self.config.gemini_temperature,
-                    max_output_tokens=self.config.gemini_max_tokens,
-                    convert_system_message_to_human=True,
+                    max_tokens=self.config.gemini_max_tokens,
                 )
             
             elif provider == "openai":
@@ -68,9 +71,9 @@ class AIClientFactory:
                     logger.warning("Anthropic API key not found")
                     return None
                 
-                return ChatAnthropicMessages(
+                return ChatAnthropic(
                     model=self.config.anthropic_model,
-                    anthropic_api_key=self.config.anthropic_api_key,
+                    api_key=self.config.anthropic_api_key,
                     temperature=self.config.gemini_temperature,
                 )
             

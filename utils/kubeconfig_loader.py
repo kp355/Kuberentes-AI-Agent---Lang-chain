@@ -51,8 +51,30 @@ class KubeconfigLoader:
         return str(local_path)
 
 
-def get_kubeconfig_path() -> str:
-    """Get kubeconfig path."""
+def get_kubeconfig_path(cluster_id: str = None) -> str:
+    """Get kubeconfig path, optionally for a specific cluster.
+    
+    Args:
+        cluster_id: Optional cluster identifier (can be a kubeconfig filename or path)
+    """
     loader = KubeconfigLoader()
+    
+    # If cluster_id is provided and looks like a filename, try to use it
+    if cluster_id:
+        # Check if it's a direct path or filename
+        if cluster_id.endswith('.yaml') or cluster_id.endswith('.yml'):
+            # Try common kubeconfig locations
+            possible_paths = [
+                Path.home() / ".kube" / cluster_id,
+                Path.home() / ".kube" / "configs" / cluster_id,
+                Path("/tmp") / cluster_id,
+            ]
+            
+            for path in possible_paths:
+                if path.exists():
+                    logger.info("Using cluster-specific kubeconfig", cluster_id=cluster_id, path=str(path))
+                    return str(path)
+            
+            logger.warning("Cluster-specific kubeconfig not found, falling back to default", cluster_id=cluster_id)
+    
     return loader.load_kubeconfig()
-

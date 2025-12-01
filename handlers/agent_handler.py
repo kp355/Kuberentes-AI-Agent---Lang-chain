@@ -1,5 +1,5 @@
 """Handler for AI agent queries using LangGraph."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from models.model import QueryRequest, QueryResponse
 from core.langgraph_agent import get_agent
 from utils.kubeconfig_loader import get_kubeconfig_path
@@ -11,9 +11,13 @@ router = APIRouter()
 
 
 @router.post("/query", response_model=QueryResponse)
-async def process_query(request: QueryRequest):
+async def process_query(
+    request: QueryRequest,
+    cluster_id: str = Query(None, description="Kubernetes cluster ID"),
+    session_id: str = Query(None, description="Session ID for tracking")
+):
     """Process a natural language query about Kubernetes using LangGraph agent."""
-    logger.info("Received query", query=request.query, namespace=request.namespace)
+    logger.info("Received query", prompt=request.prompt, namespace=request.namespace, cluster_id=cluster_id, session_id=session_id)
     
     start_time = time.time()
     
@@ -24,9 +28,9 @@ async def process_query(request: QueryRequest):
         # Get agent
         agent = get_agent(kubeconfig_path)
         
-        # Process query
+        # Process query - use request.prompt since that's what the model has
         result = await agent.query(
-            query=request.query,
+            query=request.prompt,  # ✅ Use request.prompt
             namespace=request.namespace or "default",
             context=request.context or {}
         )
@@ -48,14 +52,18 @@ async def process_query(request: QueryRequest):
         return response
         
     except Exception as e:
-        logger.error("Query processing failed", error=str(e))
+        logger.error("Query processing failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 
 @router.post("/diagnose-pod")
-async def diagnose_pod(pod_name: str, namespace: str = "default"):
+async def diagnose_pod(
+    pod_name: str = Query(...),
+    namespace: str = Query(default="default"),
+    cluster_id: str = Query(None)
+):
     """Diagnose a specific pod failure."""
-    logger.info("Diagnosing pod", pod=pod_name, namespace=namespace)
+    logger.info("Diagnosing pod", pod=pod_name, namespace=namespace, cluster_id=cluster_id)
     
     try:
         from services.pod_diagnostics import get_pod_diagnostics_service
@@ -69,5 +77,5 @@ async def diagnose_pod(pod_name: str, namespace: str = "default"):
         return result
         
     except Exception as e:
-        logger.error("Pod diagnosis failed", error=str(e))
+        logger.error("Pod diagnosis failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Diagnosis failed: {str(e)}")

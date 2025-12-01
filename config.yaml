@@ -1,0 +1,53 @@
+# LangChain + LangGraph Configuration - Latest Stable (Dec 2024)
+app:
+  name: "Kubernetes AI Troubleshooter"
+  version: "2.0.0"
+  environment: "production"
+
+llm:
+  primary_provider: "gemini"
+  fallback_providers: ["openai", "anthropic"]
+  
+  gemini:
+    # Use gemini-2.0-flash-exp for latest, or gemini-1.5-flash for stable
+    # Available models: gemini-2.0-flash-exp, gemini-1.5-flash, gemini-1.5-pro
+    model: "gemini-2.0-flash"
+    temperature: 0.1
+    max_tokens: 8192
+    timeout: 30
+    retry_attempts: 3
+    retry_delay: 2
+  
+  openai:
+    model: "gpt-4-turbo-preview"
+    temperature: 0.1
+    max_tokens: 4096
+  
+  anthropic:
+    model: "claude-3-sonnet-20240229"
+    temperature: 0.1
+    max_tokens: 4096
+
+langgraph:
+  max_iterations: 10
+  recursion_limit: 25
+  checkpoint_enabled: true
+  
+kubernetes:
+  max_log_lines: 500
+  event_lookback_hours: 24
+  pod_timeout: 30
+  
+security:
+  max_query_length: 1000
+  allowed_namespaces: ["default", "kube-system", "monitoring"]
+  block_dangerous_commands: true
+
+observability:
+  logging:
+    level: "INFO"
+    format: "json"
+  
+  prometheus:
+    enabled: true
+    port: 9090

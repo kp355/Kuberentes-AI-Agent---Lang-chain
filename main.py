@@ -1,11 +1,12 @@
 """FastAPI main application with LangChain + LangGraph integration."""
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from handlers import agent_handler, filter_handler, recommendation_handler
 from models.model import HealthResponse
 from models.config import config
 import structlog
 from datetime import datetime
+import time
 
 # Configure structured logging
 structlog.configure(
@@ -33,10 +34,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    
+    # Log incoming request
+    logger.info(
+        "🔵 INCOMING REQUEST",
+        method=request.method,
+        path=request.url.path,
+        query_params=str(request.url.query),
+        client=request.client.host if request.client else None
+    )
+    
+    response = await call_next(request)
+    
+    # Log response
+    process_time = time.time() - start_time
+    logger.info(
+        "✅ REQUEST COMPLETED",
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        process_time=f"{process_time:.4f}s"
+    )
+    
+    return response
+
 # Include routers
-app.include_router(agent_handler.router, prefix="/api/agent", tags=["agent"])
-app.include_router(filter_handler.router, prefix="/api/filter", tags=["filter"])
-app.include_router(recommendation_handler.router, prefix="/api/recommendations", tags=["recommendations"])
+app.include_router(agent_handler.router, prefix="/api/v1/agent", tags=["agent"])
+app.include_router(filter_handler.router, prefix="/api/v1/filter", tags=["filter"])
+app.include_router(recommendation_handler.router, prefix="/api/v1/recommendations", tags=["recommendations"])
 
 
 @app.get("/")
@@ -54,12 +83,10 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     try:
-        # Check LLM availability
         from models.ai import get_llm
         llm = get_llm()
         llm_status = "healthy" if llm else "unavailable"
         
-        # Check Kubernetes connectivity
         try:
             from utils.kubeconfig_loader import get_kubeconfig_path
             kubeconfig_path = get_kubeconfig_path()
